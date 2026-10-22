@@ -1,12 +1,13 @@
 
 import 'package:flutter/material.dart';
+import 'stock_database.dart';
 
 void main() {
-  runApp(const StockApp());
+  runApp(const StockManagementApp());
 }
 
-class StockApp extends StatelessWidget {
-  const StockApp({super.key});
+class StockManagementApp extends StatelessWidget {
+  const StockManagementApp({super.key});
 
   @override
   Widget build(BuildContext context) {
@@ -14,24 +15,12 @@ class StockApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       title: 'Stock Management',
       theme: ThemeData(
-        colorSchemeSeed: Colors.green,
+        colorScheme: ColorScheme.fromSeed(seedColor: Colors.indigo),
         useMaterial3: true,
       ),
       home: const StockHomePage(),
     );
   }
-}
-
-class Product {
-  String name;
-  double price;
-  int quantity;
-
-  Product({
-    required this.name,
-    required this.price,
-    required this.quantity,
-  });
 }
 
 class StockHomePage extends StatefulWidget {
@@ -42,261 +31,277 @@ class StockHomePage extends StatefulWidget {
 }
 
 class _StockHomePageState extends State<StockHomePage> {
-  final List<Product> products = [
-    Product(name: 'Indomie', price: 500, quantity: 20),
-    Product(name: 'Sugar', price: 1500, quantity: 10),
-    Product(name: 'Rice', price: 2000, quantity: 15),
-  ];
+  final nameController = TextEditingController();
+  final quantityController = TextEditingController();
+  final priceController = TextEditingController();
 
-  double get totalValue => products.fold(
-        0,
-        (sum, product) => sum + product.price * product.quantity,
-      );
+  List<Map<String, dynamic>> products = [];
+  bool isLoading = true;
+  bool isSaving = false;
+  int? editingId;
 
-  int get totalItems =>
-      products.fold(0, (sum, product) => sum + product.quantity);
+  @override
+  void initState() {
+    super.initState();
+    loadProducts();
+  }
 
-  void showAddProductDialog() {
-    final formKey = GlobalKey<FormState>();
-    final nameController = TextEditingController();
-    final priceController = TextEditingController();
-    final quantityController = TextEditingController();
+  @override
+  void dispose() {
+    nameController.dispose();
+    quantityController.dispose();
+    priceController.dispose();
+    super.dispose();
+  }
 
-    showDialog(
+  Future<void> loadProducts() async {
+    setState(() => isLoading = true);
+
+    try {
+      final records = await StockDatabase.getProducts();
+
+      if (!mounted) return;
+
+      setState(() {
+        products = records.map((record) {
+          return {
+            'id': record.key,
+            ...record.value,
+          };
+        }).toList();
+        isLoading = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => isLoading = false);
+      showMessage('Could not load products: $e');
+    }
+  }
+
+  void showMessage(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message)),
+    );
+  }
+
+  void clearForm() {
+    nameController.clear();
+    quantityController.clear();
+    priceController.clear();
+    setState(() => editingId = null);
+  }
+
+  Future<void> saveProduct() async {
+    final name = nameController.text.trim();
+    final quantity = int.tryParse(quantityController.text.trim());
+    final price = double.tryParse(priceController.text.trim());
+
+    if (name.isEmpty || quantity == null || price == null) {
+      showMessage('Enter a product name, whole-number quantity and valid price.');
+      return;
+    }
+
+    if (quantity < 0 || price < 0) {
+      showMessage('Quantity and price cannot be negative.');
+      return;
+    }
+
+    setState(() => isSaving = true);
+
+    try {
+      final product = {
+        'name': name,
+        'quantity': quantity,
+        'price': price,
+      };
+
+      if (editingId == null) {
+        await StockDatabase.addProduct(product);
+      } else {
+        await StockDatabase.updateProduct(editingId!, product);
+      }
+
+      if (!mounted) return;
+
+      clearForm();
+      showMessage('Product saved successfully.');
+      await loadProducts();
+    } catch (e) {
+      showMessage('Could not save product: $e');
+    } finally {
+      if (mounted) setState(() => isSaving = false);
+    }
+  }
+
+  void startEditing(Map<String, dynamic> product) {
+    setState(() {
+      editingId = product['id'] as int;
+      nameController.text = product['name'].toString();
+      quantityController.text = product['quantity'].toString();
+      priceController.text = product['price'].toString();
+    });
+  }
+
+  Future<void> deleteProduct(Map<String, dynamic> product) async {
+    final confirm = await showDialog<bool>(
       context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('Add Product'),
-        content: Form(
-          key: formKey,
-          child: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                TextFormField(
-                  controller: nameController,
-                  decoration: const InputDecoration(
-                    labelText: 'Product name',
-                  ),
-                  validator: (value) =>
-                      value == null || value.trim().isEmpty
-                          ? 'Enter product name'
-                          : null,
-                ),
-                TextFormField(
-                  controller: priceController,
-                  keyboardType: const TextInputType.numberWithOptions(
-                    decimal: true,
-                  ),
-                  decoration: const InputDecoration(
-                    labelText: 'Price (RWF)',
-                  ),
-                  validator: (value) {
-                    final price = double.tryParse(value ?? '');
-                    if (price == null || !price.isFinite || price <= 0) {
-                      return 'Enter a valid positive price';
-                    }
-                    return null;
-                  },
-                ),
-                TextFormField(
-                  controller: quantityController,
-                  keyboardType: TextInputType.number,
-                  decoration: const InputDecoration(
-                    labelText: 'Quantity',
-                  ),
-                  validator: (value) {
-                    final quantity = int.tryParse(value ?? '');
-                    if (quantity == null || quantity < 0) {
-                      return 'Enter a valid quantity';
-                    }
-                    return null;
-                  },
-                ),
-              ],
-            ),
-          ),
-        ),
+      builder: (context) => AlertDialog(
+        title: const Text('Delete product?'),
+        content: Text('Delete ${product['name']} from stock?'),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(dialogContext),
+            onPressed: () => Navigator.pop(context, false),
             child: const Text('Cancel'),
           ),
-          ElevatedButton(
-            onPressed: () {
-              if (!formKey.currentState!.validate()) return;
-
-              setState(() {
-                products.add(
-                  Product(
-                    name: nameController.text.trim(),
-                    price: double.parse(priceController.text),
-                    quantity: int.parse(quantityController.text),
-                  ),
-                );
-              });
-
-              Navigator.pop(dialogContext);
-            },
-            child: const Text('Save'),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Delete'),
           ),
         ],
       ),
-    ).then((_) {
-      nameController.dispose();
-      priceController.dispose();
-      quantityController.dispose();
-    });
-  }
+    );
 
-  void changeQuantity(Product product, int change) {
-    setState(() {
-      if (product.quantity + change >= 0) {
-        product.quantity += change;
-      }
-    });
-  }
+    if (confirm != true) return;
 
-  void deleteProduct(Product product) {
-    setState(() {
-      products.remove(product);
-    });
+    try {
+      await StockDatabase.deleteProduct(product['id'] as int);
+
+      if (!mounted) return;
+
+      if (editingId == product['id']) clearForm();
+
+      showMessage('Product deleted successfully.');
+      await loadProducts();
+    } catch (e) {
+      if (mounted) showMessage('Could not delete product: $e');
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Stock Management'),
-        backgroundColor: Colors.green,
-        foregroundColor: Colors.white,
-      ),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: showAddProductDialog,
-        icon: const Icon(Icons.add),
-        label: const Text('Add Product'),
-      ),
-      body: Column(
-        children: [
-          Padding(
-            padding: const EdgeInsets.all(12),
-            child: Row(
-              children: [
-                Expanded(
-                  child: Card(
-                    child: Padding(
-                      padding: const EdgeInsets.all(12),
-                      child: Column(
-                        children: [
-                          const Icon(Icons.inventory_2),
-                          const Text('Total Units'),
-                          Text(
-                            '$totalItems',
-                            style: const TextStyle(
-                              fontSize: 22,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ),
-                Expanded(
-                  child: Card(
-                    child: Padding(
-                      padding: const EdgeInsets.all(12),
-                      child: Column(
-                        children: [
-                          const Icon(Icons.payments),
-                          const Text('Stock Value'),
-                          Text(
-                            '${totalValue.toStringAsFixed(0)} RWF',
-                            textAlign: TextAlign.center,
-                            style: const TextStyle(
-                              fontSize: 18,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-          const Padding(
-            padding: EdgeInsets.all(12),
-            child: Align(
-              alignment: Alignment.centerLeft,
-              child: Text(
-                'Product List',
-                style: TextStyle(
-                  fontSize: 22,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-            ),
-          ),
-          Expanded(
-            child: products.isEmpty
-                ? const Center(child: Text('No products yet. Add one!'))
-                : ListView.builder(
-                    padding: const EdgeInsets.only(bottom: 90),
-                    itemCount: products.length,
-                    itemBuilder: (context, index) {
-                      final product = products[index];
-
-                      return Card(
-                        margin: const EdgeInsets.symmetric(
-                          horizontal: 12,
-                          vertical: 5,
-                        ),
-                        child: ListTile(
-                          leading: const CircleAvatar(
-                            child: Icon(Icons.inventory),
-                          ),
-                          title: Text(product.name),
-                          subtitle: Text(
-                            '${product.price.toStringAsFixed(0)} RWF each'
-                            '\nQuantity: ${product.quantity}',
-                          ),
-                          isThreeLine: true,
-                          trailing: SizedBox(
-                            width: 120,
-                            child: Row(
-                              mainAxisAlignment: MainAxisAlignment.end,
-                              children: [
-                                IconButton(
-                                  tooltip: 'Decrease quantity',
-                                  onPressed: product.quantity > 0
-                                      ? () => changeQuantity(product, -1)
-                                      : null,
-                                  icon: const Icon(Icons.remove_circle_outline),
-                                ),
-                                IconButton(
-                                  tooltip: 'Increase quantity',
-                                  onPressed: () =>
-                                      changeQuantity(product, 1),
-                                  icon: const Icon(Icons.add_circle_outline),
-                                ),
-                                IconButton(
-                                  tooltip: 'Delete product',
-                                  onPressed: () => deleteProduct(product),
-                                  icon: const Icon(
-                                    Icons.delete_outline,
-                                    color: Colors.red,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
-                      );
-                    },
-                  ),
+        title: const Text('Stock Management System'),
+        backgroundColor: Theme.of(context).colorScheme.inversePrimary,
+        actions: [
+          IconButton(
+            onPressed: loadProducts,
+            icon: const Icon(Icons.refresh),
+            tooltip: 'Refresh stock',
           ),
         ],
+      ),
+      body: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 900),
+          child: ListView(
+            padding: const EdgeInsets.all(20),
+            children: [
+              Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(20),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Text(
+                        editingId == null ? 'Add New Stock' : 'Update Stock',
+                        style: Theme.of(context).textTheme.headlineSmall,
+                      ),
+                      const SizedBox(height: 16),
+                      TextField(
+                        controller: nameController,
+                        decoration: const InputDecoration(
+                          labelText: 'Product name',
+                          border: OutlineInputBorder(),
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      TextField(
+                        controller: quantityController,
+                        keyboardType: TextInputType.number,
+                        decoration: const InputDecoration(
+                          labelText: 'Quantity',
+                          border: OutlineInputBorder(),
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      TextField(
+                        controller: priceController,
+                        keyboardType: const TextInputType.numberWithOptions(
+                          decimal: true,
+                        ),
+                        decoration: const InputDecoration(
+                          labelText: 'Price',
+                          border: OutlineInputBorder(),
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+                      Wrap(
+                        spacing: 10,
+                        children: [
+                          FilledButton.icon(
+                            onPressed: isSaving ? null : saveProduct,
+                            icon: Icon(
+                              editingId == null ? Icons.add : Icons.save,
+                            ),
+                            label: Text(
+                              editingId == null ? 'Add Product' : 'Update Product',
+                            ),
+                          ),
+                          if (editingId != null)
+                            OutlinedButton(
+                              onPressed: clearForm,
+                              child: const Text('Cancel'),
+                            ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(height: 20),
+              Text(
+                'Saved Products (${products.length})',
+                style: Theme.of(context).textTheme.titleLarge,
+              ),
+              const SizedBox(height: 10),
+              if (isLoading)
+                const Center(child: CircularProgressIndicator()),
+              if (!isLoading && products.isEmpty)
+                const Text('No products saved yet.'),
+              if (!isLoading)
+                ...products.map(
+                  (product) => Card(
+                    child: ListTile(
+                      leading: CircleAvatar(
+                        child: Text(product['quantity'].toString()),
+                      ),
+                      title: Text(product['name'].toString()),
+                      subtitle: Text(
+                        'Quantity: ${product['quantity']}'
+                        ' | Price: ${product['price']}',
+                      ),
+                      trailing: Wrap(
+                        spacing: 0,
+                        children: [
+                          IconButton(
+                            tooltip: 'Edit',
+                            onPressed: () => startEditing(product),
+                            icon: const Icon(Icons.edit),
+                          ),
+                          IconButton(
+                            tooltip: 'Delete',
+                            onPressed: () => deleteProduct(product),
+                            icon: const Icon(Icons.delete, color: Colors.red),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        ),
       ),
     );
   }
